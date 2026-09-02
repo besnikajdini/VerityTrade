@@ -2,6 +2,7 @@
     /* Private Banking — Light Luxury Palette */
     --bg-gradient: radial-gradient(circle at 0% 0%, #fdfbf7 0%, #f6f0e4 45%, #efe6d3 100%);
     --panel-bg: rgba(255, 255, 255, 0.64);
+    --panel-bg-solid: #ffffff;
     --panel-border: 1px solid rgba(28, 25, 23, 0.08);
     --text-primary: #1c1917; /* Espresso ink */
     --text-secondary: #6b645c; /* Warm taupe */
@@ -197,24 +198,48 @@ button { font-family: inherit; }
 
 /* Center Column */
 .center-column { display: grid; grid-template-rows: 490px 1fr; gap: 1.5rem; }
-.chart-panel { padding: 0.5rem; position: relative; }
-canvas#portfolio-chart { border-radius: calc(var(--radius) - 4px); cursor: crosshair; }
-#chart-tooltip {
-    position: absolute;
-    background: rgba(28, 25, 23, 0.92);
-    color: white;
-    padding: 8px 12px;
-    border-radius: 8px;
-    font-size: 0.85rem;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.15s ease, transform 0.15s ease;
-    z-index: 10;
-    transform: translate(-50%, -130%);
-    white-space: nowrap;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.2);
-    border: 1px solid rgba(255,255,255,0.1);
+.chart-panel { padding: 0; position: relative; }
+
+.chart-toolbar {
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+    gap: 0.6rem; padding: 0.75rem 1.1rem;
+    border-bottom: 1px solid rgba(28,25,23,0.08);
+    background: rgba(28,25,23,0.015);
+    flex-shrink: 0;
 }
+.chart-toolbar-group {
+    display: flex; align-items: center; gap: 2px;
+    background: rgba(28,25,23,0.045); border-radius: 8px; padding: 3px;
+}
+.chart-btn {
+    border: none; background: transparent; padding: 6px 11px; border-radius: 6px; cursor: pointer;
+    font-family: var(--font-family);
+    font-size: 0.76rem; font-weight: 600; color: var(--text-secondary);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    white-space: nowrap;
+}
+.chart-btn:hover { color: var(--text-primary); }
+.chart-btn.active { background: var(--panel-bg-solid); color: var(--accent-color); box-shadow: var(--shadow-sm); }
+
+.chart-indicators { background: transparent; padding: 0; gap: 0.9rem; }
+.chart-toggle {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 0.76rem; font-weight: 600; color: var(--text-secondary);
+    cursor: pointer; user-select: none;
+}
+.chart-toggle input { width: auto; padding: 0; margin: 0; accent-color: var(--accent-color); cursor: pointer; }
+.chart-toggle:has(input:checked) { color: var(--text-primary); }
+
+.chart-legend {
+    position: absolute; top: 60px; left: 1.1rem; z-index: 5;
+    display: flex; gap: 0.9rem; align-items: baseline; flex-wrap: wrap;
+    font-size: 0.76rem; color: var(--text-secondary);
+    pointer-events: none; font-variant-numeric: tabular-nums;
+}
+.chart-legend strong { font-family: var(--font-serif); font-size: 0.95rem; color: var(--text-primary); margin-right: 0.3rem; font-weight: 600; }
+.chart-legend b { color: inherit; font-weight: 700; }
+
+.price-chart-container { flex: 1; min-height: 0; position: relative; }
 
 .holdings-panel { display: flex; flex-direction: column; }
 .cash-display {

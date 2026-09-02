@@ -2,7 +2,6 @@
 const CONFIG = {
     startBalance: 10000,
     updateInterval: 2500, // Slower for realism
-    historyMaxSize: 50,
     volatility: {
         low: 0.008,
         medium: 0.025,
@@ -14,10 +13,16 @@ const CONFIG = {
 const initialState = {
     cash: CONFIG.startBalance,
     day: 1,
-    portfolio: {}, 
-    transactions: [],
-    portfolioValueHistory: [CONFIG.startBalance], // Start with initial balance
-    dayHistory: [1]
+    portfolio: {},
+    transactions: []
+};
+
+// --- Chart Config ---
+const TIMEFRAMES = {
+    '1m': { seconds: 60, bars: 180 },
+    '5m': { seconds: 300, bars: 180 },
+    '1h': { seconds: 3600, bars: 168 },
+    '1D': { seconds: 86400, bars: 120 }
 };
 
 const ASSETS = [
@@ -39,7 +44,11 @@ let currentVolatility = 'medium';
 let selectedAssetId = 'BTC';
 let tradeTab = 'buy';
 let botStrategy = 'none';
-let chartInstance = null; // Store context/data for custom chart
+
+// Chart state
+const chartState = { timeframe: '1h', type: 'candlestick', showSMA: false, showEMA: false, showVolume: true, smaPeriod: 20, emaPeriod: 20 };
+const chartApi = { chart: null, mainSeries: null, volumeSeries: null, smaSeries: null, emaSeries: null };
+const assetBarsCache = {};
 
 // --- Init ---
 document.addEventListener('DOMContentLoaded', () => {
@@ -53,7 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     setupEventListeners();
-    initChartInteraction();
+    initPriceChart();
     startSimulation();
     renderAll();
 });
@@ -100,17 +109,6 @@ function nextDay() {
     });
 
     runBot();
-    
-    // Record History
-    const equity = calculateEquity();
-    store.portfolioValueHistory.push(equity);
-    store.dayHistory.push(store.day);
-    
-    // Trim History for performance
-    if (store.portfolioValueHistory.length > 60) {
-        store.portfolioValueHistory.shift();
-        store.dayHistory.shift();
-    }
 
     saveData();
     renderAll(true); // true = animate
@@ -253,7 +251,7 @@ function renderAll(animate = false) {
     renderPortfolio();
     renderTradeBox();
     renderHistory();
-    renderChart();
+    if (animate) updateChartLive();
 }
 
 function renderHeader() {
@@ -390,87 +388,245 @@ function renderHistory() {
     `).join('');
 }
 
-// --- Charting ---
-function renderChart() {
-    const canvas = document.getElementById('portfolio-chart');
-    const ctx = canvas.getContext('2d');
-    
-    // Resize handling
-    const container = canvas.parentElement;
-    canvas.width = container.offsetWidth;
-    canvas.height = container.offsetHeight || 300;
-    
-    const w = canvas.width;
-    const h = canvas.height;
-    const pad = 20;
-    
-    ctx.clearRect(0,0,w,h);
-    
-    const data = store.portfolioValueHistory;
-    if (data.length < 2) return;
-    
-    const min = Math.min(...data) * 0.99;
-    const max = Math.max(...data) * 1.01;
-    const range = max - min;
-    
-    // Color (light theme only) — antique gold, matches --accent-color
-    const color = '#a16207';
-    
-    // Path
-    ctx.beginPath();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
-    ctx.lineJoin = 'round';
-    
-    const getX = (i) => (i / (data.length - 1)) * w;
-    const getY = (v) => h - ((v - min) / range) * (h - pad*2) - pad;
-    
-    data.forEach((val, i) => {
-        if (i === 0) ctx.moveTo(getX(i), getY(val));
-        else ctx.lineTo(getX(i), getY(val));
+// --- Charting (lightweight-charts) ---
+
+// Generates a realistic synthetic OHLCV history for an asset/timeframe:
+// a random walk with slight drift, volatility scaled to the bar size,
+// wicks derived from the open/close move, and volume shaped by move size.
+// The series is anchored so its last close matches the asset's live price.
+function generateBars(assetId, timeframe) {
+    const tf = TIMEFRAMES[timeframe];
+    const asset = ASSETS.find(a => a.id === assetId);
+    const endPrice = currentPrices[assetId] || asset.startPrice;
+    const dailyVol = CONFIG.volatility[currentVolatility];
+    const barVol = dailyVol * Math.sqrt(tf.seconds / 86400);
+    const drift = 0.00004;
+
+    // Walk backward from the live price to build a plausible history, oldest last.
+    const closesDesc = [endPrice];
+    let price = endPrice;
+    for (let i = 1; i < tf.bars; i++) {
+        const change = (Math.random() * 2 - 1) * barVol + drift;
+        price = price / (1 + change);
+        if (price < 0.01) price = 0.01;
+        closesDesc.push(price);
+    }
+    const closes = closesDesc.reverse(); // oldest -> newest, last === endPrice
+
+    const now = Math.floor(Date.now() / 1000);
+    const lastTime = Math.floor(now / tf.seconds) * tf.seconds;
+
+    const bars = [];
+    let prevClose = closes[0] * (1 + (Math.random() * 2 - 1) * barVol * 0.5);
+    closes.forEach((close, i) => {
+        const time = lastTime - (closes.length - 1 - i) * tf.seconds;
+        const open = prevClose;
+        const wick = (Math.abs(close - open) * (0.3 + Math.random() * 0.7)) + (open * barVol * 0.3);
+        const high = Math.max(open, close) + wick * Math.random();
+        const low = Math.max(0.01, Math.min(open, close) - wick * Math.random());
+        const baseVolume = asset.type === 'crypto' ? 40 : 400;
+        const volume = Math.round(baseVolume * (1 + Math.abs(close - open) / open / barVol) * (0.5 + Math.random()));
+        bars.push({ time, open, high, low, close, volume });
+        prevClose = close;
     });
-    ctx.stroke();
-    
-    // Gradient fill
-    // We need to close the path for fill
-    ctx.lineTo(w, h);
-    ctx.lineTo(0, h);
-    ctx.closePath();
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, 'rgba(161, 98, 7, 0.18)');
-    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    ctx.fillStyle = grad;
-    ctx.fill();
+    return bars;
 }
 
-function initChartInteraction() {
-    const canvas = document.getElementById('portfolio-chart');
-    const tooltip = document.getElementById('chart-tooltip');
-    
-    canvas.addEventListener('mousemove', (e) => {
-        const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const w = canvas.width;
-        
-        const data = store.portfolioValueHistory;
-        if (data.length < 2) return;
-        
-        // Find closest index
-        const index = Math.round((x / w) * (data.length - 1));
-        if (index >= 0 && index < data.length) {
-            const val = data[index];
-            const day = store.dayHistory[index];
-            
-            tooltip.style.opacity = 1;
-            tooltip.style.left = `${e.clientX - rect.left}px`;
-            tooltip.style.top = `${e.clientY - rect.top}px`;
-            tooltip.innerHTML = `Day ${day}<br><strong>${formatCurrency(val)}</strong>`;
+function getBars(assetId, timeframe) {
+    const key = `${assetId}_${timeframe}`;
+    if (!assetBarsCache[key]) assetBarsCache[key] = generateBars(assetId, timeframe);
+    return assetBarsCache[key];
+}
+
+// Appends a new bar (on timeframe boundary) or updates the currently forming
+// one using the real simulated price — ties the chart to the live simulation.
+function pushLiveBar(assetId) {
+    const timeframe = chartState.timeframe;
+    const key = `${assetId}_${timeframe}`;
+    const bars = assetBarsCache[key];
+    if (!bars || bars.length === 0) return null;
+
+    const tf = TIMEFRAMES[timeframe];
+    const last = bars[bars.length - 1];
+    const close = currentPrices[assetId];
+    const barTime = Math.floor(Date.now() / 1000 / tf.seconds) * tf.seconds;
+
+    if (barTime > last.time) {
+        const open = last.close;
+        const bar = {
+            time: barTime,
+            open,
+            high: Math.max(open, close),
+            low: Math.min(open, close),
+            close,
+            volume: Math.round(Math.abs(close - open) / open * 100000) + 5
+        };
+        bars.push(bar);
+        return bar;
+    }
+
+    last.high = Math.max(last.high, close);
+    last.low = Math.min(last.low, close);
+    last.close = close;
+    last.volume += Math.round(Math.abs(close - last.open) / last.open * 1000) + 1;
+    return last;
+}
+
+function computeSMA(bars, period) {
+    const result = [];
+    for (let i = period - 1; i < bars.length; i++) {
+        let sum = 0;
+        for (let j = i - period + 1; j <= i; j++) sum += bars[j].close;
+        result.push({ time: bars[i].time, value: sum / period });
+    }
+    return result;
+}
+
+function computeEMA(bars, period) {
+    const result = [];
+    const k = 2 / (period + 1);
+    let emaPrev;
+    bars.forEach((bar, i) => {
+        emaPrev = i === 0 ? bar.close : (bar.close * k + emaPrev * (1 - k));
+        if (i >= period - 1) result.push({ time: bar.time, value: emaPrev });
+    });
+    return result;
+}
+
+function volumeColor(bar) {
+    return bar.close >= bar.open ? 'rgba(47, 107, 79, 0.5)' : 'rgba(155, 59, 52, 0.5)';
+}
+
+function initPriceChart() {
+    const container = document.getElementById('price-chart');
+    chartApi.chart = LightweightCharts.createChart(container, {
+        layout: { background: { color: 'transparent' }, textColor: '#6b645c', fontFamily: 'Inter, sans-serif' },
+        grid: {
+            vertLines: { color: 'rgba(28,25,23,0.06)' },
+            horzLines: { color: 'rgba(28,25,23,0.06)' }
+        },
+        rightPriceScale: { borderColor: 'rgba(28,25,23,0.1)' },
+        timeScale: { borderColor: 'rgba(28,25,23,0.1)', timeVisible: true, secondsVisible: false },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        autoSize: true
+    });
+
+    chartApi.volumeSeries = chartApi.chart.addSeries(LightweightCharts.HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'volume-scale'
+    });
+    chartApi.chart.priceScale('volume-scale').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+
+    setChartType(chartState.type, true);
+    chartApi.chart.subscribeCrosshairMove(handleCrosshairMove);
+    loadChartData();
+}
+
+function setChartType(type, silent) {
+    if (chartApi.mainSeries) {
+        chartApi.chart.removeSeries(chartApi.mainSeries);
+        chartApi.mainSeries = null;
+    }
+    const upColor = '#2f6b4f', downColor = '#9b3b34';
+    if (type === 'candlestick') {
+        chartApi.mainSeries = chartApi.chart.addSeries(LightweightCharts.CandlestickSeries, {
+            upColor, downColor, borderUpColor: upColor, borderDownColor: downColor,
+            wickUpColor: upColor, wickDownColor: downColor
+        });
+    } else if (type === 'line') {
+        chartApi.mainSeries = chartApi.chart.addSeries(LightweightCharts.LineSeries, { color: '#a16207', lineWidth: 2 });
+    } else {
+        chartApi.mainSeries = chartApi.chart.addSeries(LightweightCharts.AreaSeries, {
+            lineColor: '#a16207', topColor: 'rgba(161,98,7,0.28)', bottomColor: 'rgba(161,98,7,0.02)'
+        });
+    }
+    chartState.type = type;
+    if (!silent) loadChartData();
+}
+
+function loadChartData() {
+    const bars = getBars(selectedAssetId, chartState.timeframe);
+
+    chartApi.mainSeries.setData(chartState.type === 'candlestick'
+        ? bars.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close }))
+        : bars.map(b => ({ time: b.time, value: b.close })));
+
+    chartApi.volumeSeries.setData(bars.map(b => ({ time: b.time, value: b.volume, color: volumeColor(b) })));
+
+    updateIndicators();
+    updateChartLegend(bars[bars.length - 1]);
+    chartApi.chart.timeScale().fitContent();
+}
+
+function updateIndicators() {
+    const bars = getBars(selectedAssetId, chartState.timeframe);
+
+    if (chartState.showSMA) {
+        if (!chartApi.smaSeries) {
+            chartApi.smaSeries = chartApi.chart.addSeries(LightweightCharts.LineSeries, { color: '#a16207', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
         }
-    });
-    
-    canvas.addEventListener('mouseleave', () => {
-        tooltip.style.opacity = 0;
-    });
+        chartApi.smaSeries.setData(computeSMA(bars, chartState.smaPeriod));
+    } else if (chartApi.smaSeries) {
+        chartApi.chart.removeSeries(chartApi.smaSeries);
+        chartApi.smaSeries = null;
+    }
+
+    if (chartState.showEMA) {
+        if (!chartApi.emaSeries) {
+            chartApi.emaSeries = chartApi.chart.addSeries(LightweightCharts.LineSeries, { color: '#1c1917', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
+        }
+        chartApi.emaSeries.setData(computeEMA(bars, chartState.emaPeriod));
+    } else if (chartApi.emaSeries) {
+        chartApi.chart.removeSeries(chartApi.emaSeries);
+        chartApi.emaSeries = null;
+    }
+}
+
+function switchTimeframe(tf) {
+    chartState.timeframe = tf;
+    document.querySelectorAll('#timeframe-group .chart-btn').forEach(b => b.classList.toggle('active', b.dataset.timeframe === tf));
+    loadChartData();
+}
+
+// Called every simulation tick: pushes the live price into the chart
+// without resetting zoom/pan (unlike a full loadChartData reload).
+function updateChartLive() {
+    if (!chartApi.chart || !chartApi.mainSeries) return;
+    const bar = pushLiveBar(selectedAssetId);
+    if (!bar) return;
+
+    chartApi.mainSeries.update(chartState.type === 'candlestick'
+        ? { time: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close }
+        : { time: bar.time, value: bar.close });
+    chartApi.volumeSeries.update({ time: bar.time, value: bar.volume, color: volumeColor(bar) });
+
+    if (chartState.showSMA || chartState.showEMA) updateIndicators();
+    updateChartLegend(bar);
+}
+
+function handleCrosshairMove(param) {
+    if (!param || !param.time || !param.seriesData || !chartApi.mainSeries || !param.seriesData.get(chartApi.mainSeries)) {
+        const bars = getBars(selectedAssetId, chartState.timeframe);
+        updateChartLegend(bars[bars.length - 1]);
+        return;
+    }
+    const data = param.seriesData.get(chartApi.mainSeries);
+    updateChartLegend(chartState.type === 'candlestick'
+        ? data
+        : { open: data.value, high: data.value, low: data.value, close: data.value });
+}
+
+function updateChartLegend(bar) {
+    if (!bar) return;
+    const asset = ASSETS.find(a => a.id === selectedAssetId);
+    const positive = bar.close >= bar.open;
+    document.getElementById('chart-legend').innerHTML = `
+        <strong>${asset.name} (${selectedAssetId})</strong>
+        <span>O <b>${bar.open.toFixed(2)}</b></span>
+        <span>H <b>${bar.high.toFixed(2)}</b></span>
+        <span>L <b>${bar.low.toFixed(2)}</b></span>
+        <span class="${positive ? 'text-green' : 'text-red'}">C <b>${bar.close.toFixed(2)}</b></span>
+    `;
 }
 
 // --- Interaction Helpers ---
@@ -493,6 +649,7 @@ function showToast(msg, type = 'success') {
 function selectAsset(id) {
     selectedAssetId = id;
     renderAll();
+    if (chartApi.chart) loadChartData();
 }
 
 function formatCurrency(num) {
@@ -526,7 +683,31 @@ function setupEventListeners() {
     
     document.getElementById('trade-qty').oninput = updateTotal;
     document.getElementById('confirm-trade-btn').onclick = executeTrade;
-    
+
+    // Chart toolbar
+    document.querySelectorAll('#timeframe-group .chart-btn').forEach(btn => {
+        btn.onclick = () => switchTimeframe(btn.dataset.timeframe);
+    });
+    document.querySelectorAll('#chart-type-group .chart-btn').forEach(btn => {
+        btn.onclick = () => {
+            document.querySelectorAll('#chart-type-group .chart-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            setChartType(btn.dataset.charttype);
+        };
+    });
+    document.getElementById('toggle-sma').onchange = (e) => {
+        chartState.showSMA = e.target.checked;
+        updateIndicators();
+    };
+    document.getElementById('toggle-ema').onchange = (e) => {
+        chartState.showEMA = e.target.checked;
+        updateIndicators();
+    };
+    document.getElementById('toggle-volume').onchange = (e) => {
+        chartState.showVolume = e.target.checked;
+        chartApi.volumeSeries.applyOptions({ visible: e.target.checked });
+    };
+
     document.getElementById('strategy-select').onchange = (e) => {
         botStrategy = e.target.value;
         const s = document.getElementById('bot-status');
@@ -538,6 +719,4 @@ function setupEventListeners() {
             s.style.color = 'var(--success-color)';
         }
     };
-    
-    window.onresize = renderChart;
 }

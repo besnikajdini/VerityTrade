@@ -11,6 +11,8 @@
     <!-- Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="styles.css">
+    <!-- Charting -->
+    <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 
@@ -72,8 +74,26 @@
         <section class="center-column">
             <!-- Chart -->
             <div class="panel chart-panel">
-                <div id="chart-tooltip"></div>
-                <canvas id="portfolio-chart"></canvas>
+                <div class="chart-toolbar">
+                    <div class="chart-toolbar-group" id="timeframe-group">
+                        <button class="chart-btn" data-timeframe="1m">1m</button>
+                        <button class="chart-btn" data-timeframe="5m">5m</button>
+                        <button class="chart-btn active" data-timeframe="1h">1h</button>
+                        <button class="chart-btn" data-timeframe="1D">1D</button>
+                    </div>
+                    <div class="chart-toolbar-group" id="chart-type-group">
+                        <button class="chart-btn active" data-charttype="candlestick">Candles</button>
+                        <button class="chart-btn" data-charttype="line">Line</button>
+                        <button class="chart-btn" data-charttype="area">Area</button>
+                    </div>
+                    <div class="chart-toolbar-group chart-indicators">
+                        <label class="chart-toggle"><input type="checkbox" id="toggle-sma"> SMA 20</label>
+                        <label class="chart-toggle"><input type="checkbox" id="toggle-ema"> EMA 20</label>
+                        <label class="chart-toggle"><input type="checkbox" id="toggle-volume" checked> Volume</label>
+                    </div>
+                </div>
+                <div id="chart-legend" class="chart-legend"></div>
+                <div id="price-chart" class="price-chart-container"></div>
             </div>
 
             <!-- Holdings -->

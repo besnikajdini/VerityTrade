@@ -72,28 +72,50 @@
 
         <!-- Center: Chart & Portfolio -->
         <section class="center-column">
-            <!-- Chart -->
-            <div class="panel chart-panel">
-                <div class="chart-toolbar">
-                    <div class="chart-toolbar-group" id="timeframe-group">
-                        <button class="chart-btn" data-timeframe="1m">1m</button>
-                        <button class="chart-btn" data-timeframe="5m">5m</button>
-                        <button class="chart-btn active" data-timeframe="1h">1h</button>
-                        <button class="chart-btn" data-timeframe="1D">1D</button>
+            <!-- Chart + Order Book -->
+            <div class="chart-row">
+                <div class="panel chart-panel">
+                    <div class="chart-toolbar">
+                        <div class="chart-toolbar-group" id="timeframe-group">
+                            <button class="chart-btn" data-timeframe="1m">1m</button>
+                            <button class="chart-btn" data-timeframe="5m">5m</button>
+                            <button class="chart-btn active" data-timeframe="1h">1h</button>
+                            <button class="chart-btn" data-timeframe="1D">1D</button>
+                        </div>
+                        <div class="chart-toolbar-group" id="chart-type-group">
+                            <button class="chart-btn active" data-charttype="candlestick">Candles</button>
+                            <button class="chart-btn" data-charttype="line">Line</button>
+                            <button class="chart-btn" data-charttype="area">Area</button>
+                        </div>
+                        <div class="chart-toolbar-group chart-indicators">
+                            <label class="chart-toggle"><input type="checkbox" id="toggle-sma"> SMA 20</label>
+                            <label class="chart-toggle"><input type="checkbox" id="toggle-ema"> EMA 20</label>
+                            <label class="chart-toggle"><input type="checkbox" id="toggle-volume" checked> Volume</label>
+                        </div>
                     </div>
-                    <div class="chart-toolbar-group" id="chart-type-group">
-                        <button class="chart-btn active" data-charttype="candlestick">Candles</button>
-                        <button class="chart-btn" data-charttype="line">Line</button>
-                        <button class="chart-btn" data-charttype="area">Area</button>
-                    </div>
-                    <div class="chart-toolbar-group chart-indicators">
-                        <label class="chart-toggle"><input type="checkbox" id="toggle-sma"> SMA 20</label>
-                        <label class="chart-toggle"><input type="checkbox" id="toggle-ema"> EMA 20</label>
-                        <label class="chart-toggle"><input type="checkbox" id="toggle-volume" checked> Volume</label>
+                    <div id="chart-legend" class="chart-legend"></div>
+                    <div id="price-chart" class="price-chart-container"></div>
+                </div>
+
+                <div class="panel orderbook-panel">
+                    <h3><span><i class="fas fa-layer-group"></i> Order Book</span> <span id="ob-asset-label" class="ob-asset-label"></span></h3>
+                    <div class="ob-scroll">
+                        <div class="ob-col-header">
+                            <span>Price</span><span>Size</span><span>Total</span>
+                        </div>
+                        <div id="ob-asks" class="ob-levels"><!-- JS Injection --></div>
+                        <div id="ob-spread" class="ob-spread-row"><!-- JS Injection --></div>
+                        <div id="ob-bids" class="ob-levels"><!-- JS Injection --></div>
+
+                        <div class="tape-header">
+                            <i class="fas fa-stream"></i> Time &amp; Sales
+                        </div>
+                        <div class="ob-col-header tape-col-header">
+                            <span>Time</span><span>Price</span><span>Size</span>
+                        </div>
+                        <div id="tape-list" class="tape-list"><!-- JS Injection --></div>
                     </div>
                 </div>
-                <div id="chart-legend" class="chart-legend"></div>
-                <div id="price-chart" class="price-chart-container"></div>
             </div>
 
             <!-- Positions & Orders -->

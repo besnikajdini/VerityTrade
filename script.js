@@ -55,6 +55,10 @@ const chartState = { timeframe: '1h', type: 'candlestick', showSMA: false, showE
 const chartApi = { chart: null, mainSeries: null, volumeSeries: null, smaSeries: null, emaSeries: null };
 const assetBarsCache = {};
 
+// Order book / tape state
+let orderBookInterval = null;
+const tapeData = {}; // per-asset time & sales history
+
 // --- Init ---
 document.addEventListener('DOMContentLoaded', () => {
     loadData();
@@ -70,6 +74,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initPriceChart();
     updateOrderFormVisibility();
     startSimulation();
+    startOrderBookFeed();
     renderAll();
 });
 
@@ -856,6 +861,126 @@ function updateChartLegend(bar) {
     `;
 }
 
+// --- Order Book & Time and Sales ---
+// Pure presentation layer: reads the live simulated price but never writes
+// back to it, so it can't affect the trading engine or the chart.
+
+function tickSizeFor(price) {
+    if (price >= 10000) return 5;
+    if (price >= 1000) return 1;
+    if (price >= 100) return 0.1;
+    if (price >= 10) return 0.05;
+    return 0.01;
+}
+
+function baseSizeFor(asset) {
+    if (asset.type === 'crypto') return 0.6;
+    if (asset.type === 'commodity') return 4;
+    return 40; // stock
+}
+
+// Builds a synthetic depth ladder around the live price: a 1-2 tick spread,
+// then widening price levels each side with randomized resting size.
+function generateOrderBook(assetId) {
+    const price = currentPrices[assetId];
+    const asset = ASSETS.find(a => a.id === assetId);
+    const tick = tickSizeFor(price);
+    const spreadTicks = 1 + Math.floor(Math.random() * 2);
+    const bestBid = price - (spreadTicks * tick) / 2;
+    const bestAsk = price + (spreadTicks * tick) / 2;
+    const levels = 7;
+    const base = baseSizeFor(asset);
+
+    const bids = [];
+    let cum = 0;
+    for (let i = 0; i < levels; i++) {
+        const size = base * (0.4 + Math.random() * 1.6);
+        cum += size;
+        bids.push({ price: bestBid - i * tick, size, total: cum });
+    }
+
+    const asksAsc = [];
+    cum = 0;
+    for (let i = 0; i < levels; i++) {
+        const size = base * (0.4 + Math.random() * 1.6);
+        cum += size;
+        asksAsc.push({ price: bestAsk + i * tick, size, total: cum });
+    }
+    const asks = asksAsc.slice().reverse(); // worst..best, best (lowest ask) ends up next to the spread
+
+    return { bids, asks, bestBid, bestAsk, spread: bestAsk - bestBid, maxTotal: Math.max(bids[levels - 1].total, asksAsc[levels - 1].total) };
+}
+
+function obRowHtml(level, side, maxTotal) {
+    const pct = Math.min(100, (level.total / maxTotal) * 100);
+    return `
+        <div class="ob-row ob-${side}">
+            <div class="ob-depth-bar" style="width:${pct}%"></div>
+            <span class="ob-price">${level.price.toFixed(2)}</span>
+            <span class="ob-size">${level.size.toFixed(4)}</span>
+            <span class="ob-total">${level.total.toFixed(4)}</span>
+        </div>
+    `;
+}
+
+function renderOrderBook() {
+    const book = generateOrderBook(selectedAssetId);
+
+    document.getElementById('ob-asset-label').textContent = selectedAssetId;
+    document.getElementById('ob-asks').innerHTML = book.asks.map(l => obRowHtml(l, 'ask', book.maxTotal)).join('');
+    document.getElementById('ob-bids').innerHTML = book.bids.map(l => obRowHtml(l, 'bid', book.maxTotal)).join('');
+
+    const spreadPct = (book.spread / currentPrices[selectedAssetId]) * 100;
+    document.getElementById('ob-spread').innerHTML = `
+        <span>Spread</span>
+        <strong>${book.spread.toFixed(2)}</strong>
+        <span>(${spreadPct.toFixed(3)}%)</span>
+    `;
+}
+
+// Appends one (occasionally two) simulated market prints to the selected
+// asset's tape, priced around the live price with a small random walk.
+function pushTapePrint(assetId) {
+    const price = currentPrices[assetId];
+    const asset = ASSETS.find(a => a.id === assetId);
+    const tick = tickSizeFor(price);
+    const tradePrice = Math.max(0.01, price + (Math.random() * 2 - 1) * tick * 2);
+    const isBuy = Math.random() > 0.48;
+    const size = baseSizeFor(asset) * 0.15 * (0.3 + Math.random() * 1.4);
+
+    if (!tapeData[assetId]) tapeData[assetId] = [];
+    tapeData[assetId].unshift({ time: Date.now(), price: tradePrice, size, side: isBuy ? 'buy' : 'sell' });
+    if (tapeData[assetId].length > 40) tapeData[assetId].length = 40;
+}
+
+function formatTapeTime(ts) {
+    return new Date(ts).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function renderTape() {
+    const list = tapeData[selectedAssetId] || [];
+    document.getElementById('tape-list').innerHTML = list.map((t, i) => `
+        <div class="tape-row ${t.side === 'buy' ? 'text-green' : 'text-red'} ${i === 0 ? (t.side === 'buy' ? 'flash-up' : 'flash-down') : ''}">
+            <span class="tape-time">${formatTapeTime(t.time)}</span>
+            <span class="tape-price">${t.price.toFixed(2)}</span>
+            <span class="tape-size">${t.size.toFixed(4)}</span>
+        </div>
+    `).join('');
+}
+
+function updateOrderBookAndTape() {
+    pushTapePrint(selectedAssetId);
+    if (Math.random() > 0.55) pushTapePrint(selectedAssetId); // occasional burst, feels less mechanical
+    renderOrderBook();
+    renderTape();
+}
+
+function startOrderBookFeed() {
+    if (orderBookInterval) clearInterval(orderBookInterval);
+    orderBookInterval = setInterval(updateOrderBookAndTape, 900);
+    updateOrderBookAndTape(); // paint immediately instead of waiting for the first tick
+}
+
 // --- Interaction Helpers ---
 function showToast(msg, type = 'success') {
     const c = document.getElementById('toast-container');
@@ -877,6 +1002,7 @@ function selectAsset(id) {
     selectedAssetId = id;
     renderAll();
     if (chartApi.chart) loadChartData();
+    if (orderBookInterval) { renderOrderBook(); renderTape(); }
 }
 
 function formatCurrency(num) {

@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProTrade | Advanced Simulator</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+    <!-- Navbar -->
+    <header class="top-bar">
+        <div class="logo">
+            <i class="fas fa-layer-group"></i> ProTrade
+        </div>
+        
+        <div class="stats-group">
+            <div class="stat-item">
+                <span class="label">Sim Day</span>
+                <span id="day-counter" class="value">1</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="label">Total Equity</span>
+                <span id="total-equity" class="value">$10,000.00</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="label">Profit/Loss</span>
+                <span id="total-pl" class="value">0.00%</span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button id="reset-btn" class="btn-reset" title="Reset Simulation"><i class="fas fa-undo"></i> Reset</button>
+        </div>
+    </header>
+
+    <!-- Main Grid -->
+    <main class="dashboard-grid">
+        
+        <!-- Left: Market -->
+        <section class="panel market-panel">
+            <h3>
+                <span><i class="fas fa-chart-pie"></i> Market</span>
+                <div class="volatility-control" style="font-size: 0.8rem; font-weight: normal;">
+                    <i class="fas fa-wave-square"></i>
+                    <select id="risk-level" title="Market Volatility">
+                        <option value="low">Low Volatility</option>
+                        <option value="medium" selected>Normal</option>
+                        <option value="high">High Volatility</option>
+                    </select>
+                </div>
+            </h3>
+            <div class="market-list-header">
+                <span>Asset</span>
+                <span style="text-align:right">Price</span>
+                <span style="text-align:right">24h %</span>
+            </div>
+            <div id="market-list" class="market-list">
+                <!-- JS Injection -->
+            </div>
+        </section>
+
+        <!-- Center: Chart & Portfolio -->
+        <section class="center-column">
+            <!-- Chart -->
+            <div class="panel chart-panel">
+                <div id="chart-tooltip"></div>
+                <canvas id="portfolio-chart"></canvas>
+            </div>
+
+            <!-- Holdings -->
+            <div class="panel holdings-panel">
+                <div class="cash-display">
+                    <span style="font-size: 0.9rem; color: var(--text-secondary); display: block; margin-bottom: 5px;">Buying Power</span>
+                    <span id="available-cash">$10,000.00</span>
+                </div>
+                <div class="holdings-table-container">
+                    <table class="holdings-table">
+                        <thead>
+                            <tr>
+                                <th>Asset</th>
+                                <th>Quantity</th>
+                                <th>Avg Costs</th>
+                                <th>Market Value</th>
+                                <th style="text-align: right;">Total Return</th>
+                            </tr>
+                        </thead>
+                        <tbody id="holdings-list">
+                            <!-- JS Injection -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- Right: Actions -->
+        <section class="right-panel">
+            
+            <!-- Analysis & Trade -->
+            <div class="trade-box">
+                <div class="tabs">
+                    <button class="tab-btn active" data-tab="buy">Buy</button>
+                    <button class="tab-btn" data-tab="sell">Sell</button>
+                </div>
+
+                <div class="form-group">
+                    <label>Selected Asset</label>
+                    <select id="trade-asset-select">
+                        <!-- JS Injection -->
+                    </select>
+                </div>
+
+                <div id="trade-price-display" class="price-display-large">$0.00</div>
+
+                <div class="form-group">
+                    <label>Quantity</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="trade-qty" min="0" step="0.01" placeholder="0.00">
+                    </div>
+                </div>
+
+                <div class="trade-summary" style="display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 0.9rem;">
+                    <span style="color: var(--text-secondary)">Estimated Total</span>
+                    <strong id="trade-total">$0.00</strong>
+                </div>
+
+                <button id="confirm-trade-btn" class="btn-primary">Execute Order</button>
+            </div>
+
+            <!-- Strategy Bot -->
+            <div class="panel" style="padding: 1.5rem;">
+                <h3><i class="fas fa-robot"></i> Auto-Pilot</h3>
+                <div class="form-group">
+                    <label style="margin-top: 10px;">Strategy Mode</label>
+                    <select id="strategy-select">
+                        <option value="none">Manual Trading Only</option>
+                        <option value="buy-dip">Conservative (Buy Dips)</option>
+                        <option value="momentum">Aggressive (Momentum)</option>
+                    </select>
+                </div>
+                <div style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4; margin-top: 5px;" id="strategy-desc">
+                    Enable the bot to automatically trade based on market movements.
+                </div>
+                <div id="bot-status" style="margin-top: 10px; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary);">
+                    ● Bot Inactive
+                </div>
+            </div>
+
+            <!-- History -->
+            <div class="panel history-box">
+                <h3><i class="fas fa-clock"></i> Recent Activity</h3>
+                <div id="transaction-list" class="transaction-list">
+                    <!-- JS Injection -->
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
+
+    <script src="script.js"></script>
+</body>
+</html>

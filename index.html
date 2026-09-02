@@ -96,24 +96,50 @@
                 <div id="price-chart" class="price-chart-container"></div>
             </div>
 
-            <!-- Holdings -->
+            <!-- Positions & Orders -->
             <div class="panel holdings-panel">
                 <div class="cash-display">
                     <span style="font-size: 0.9rem; color: var(--text-secondary); display: block; margin-bottom: 5px;">Buying Power</span>
                     <span id="available-cash">$10,000.00</span>
                 </div>
-                <div class="holdings-table-container">
+                <div class="tabs" id="positions-orders-tabs" style="margin: 0.9rem 1.5rem 0;">
+                    <button class="tab-btn active" data-view="positions">Positions</button>
+                    <button class="tab-btn" data-view="orders">Open Orders</button>
+                </div>
+                <div class="holdings-table-container" id="positions-view">
                     <table class="holdings-table">
                         <thead>
                             <tr>
                                 <th>Asset</th>
-                                <th>Quantity</th>
-                                <th>Avg Costs</th>
-                                <th>Market Value</th>
-                                <th style="text-align: right;">Total Return</th>
+                                <th>Side</th>
+                                <th>Qty</th>
+                                <th>Entry</th>
+                                <th>Margin</th>
+                                <th>PnL</th>
+                                <th>Liq. Price</th>
+                                <th>TP / SL</th>
+                                <th></th>
                             </tr>
                         </thead>
-                        <tbody id="holdings-list">
+                        <tbody id="positions-list">
+                            <!-- JS Injection -->
+                        </tbody>
+                    </table>
+                </div>
+                <div class="holdings-table-container" id="orders-view" hidden>
+                    <table class="holdings-table">
+                        <thead>
+                            <tr>
+                                <th>Asset</th>
+                                <th>Type</th>
+                                <th>Side</th>
+                                <th>Qty</th>
+                                <th>Trigger / Limit</th>
+                                <th>Margin</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="orders-list">
                             <!-- JS Injection -->
                         </tbody>
                     </table>
@@ -126,9 +152,9 @@
             
             <!-- Analysis & Trade -->
             <div class="trade-box">
-                <div class="tabs">
-                    <button class="tab-btn active" data-tab="buy">Buy</button>
-                    <button class="tab-btn" data-tab="sell">Sell</button>
+                <div class="tabs" id="side-tabs">
+                    <button class="tab-btn active" data-side="long">Long</button>
+                    <button class="tab-btn" data-side="short">Short</button>
                 </div>
 
                 <div class="form-group">
@@ -141,18 +167,62 @@
                 <div id="trade-price-display" class="price-display-large">$0.00</div>
 
                 <div class="form-group">
+                    <label>Order Type</label>
+                    <select id="order-type-select">
+                        <option value="market">Market</option>
+                        <option value="limit">Limit</option>
+                        <option value="stop">Stop</option>
+                        <option value="stop-limit">Stop-Limit</option>
+                    </select>
+                </div>
+
+                <div class="form-group" id="trigger-price-group" hidden>
+                    <label id="trigger-price-label">Trigger Price</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="trigger-price" min="0" step="0.01" placeholder="0.00">
+                    </div>
+                </div>
+
+                <div class="form-group" id="limit-price-group" hidden>
+                    <label>Limit Price</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="limit-price" min="0" step="0.01" placeholder="0.00">
+                    </div>
+                </div>
+
+                <div class="form-group">
                     <label>Quantity</label>
                     <div class="input-wrapper">
                         <input type="number" id="trade-qty" min="0" step="0.01" placeholder="0.00">
                     </div>
                 </div>
 
-                <div class="trade-summary" style="display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 0.9rem;">
-                    <span style="color: var(--text-secondary)">Estimated Total</span>
-                    <strong id="trade-total">$0.00</strong>
+                <div class="form-group">
+                    <label>Leverage <span id="leverage-value">5x</span></label>
+                    <input type="range" id="leverage-slider" min="1" max="20" step="1" value="5">
                 </div>
 
-                <button id="confirm-trade-btn" class="btn-primary">Execute Order</button>
+                <div class="form-group">
+                    <label>Take-Profit <small>(optional)</small></label>
+                    <div class="input-wrapper">
+                        <input type="number" id="tp-price" min="0" step="0.01" placeholder="0.00">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Stop-Loss <small>(optional)</small></label>
+                    <div class="input-wrapper">
+                        <input type="number" id="sl-price" min="0" step="0.01" placeholder="0.00">
+                    </div>
+                </div>
+
+                <div class="order-preview">
+                    <div class="order-preview-row"><span>Position Size</span><strong id="trade-total">$0.00</strong></div>
+                    <div class="order-preview-row"><span>Margin Required</span><strong id="preview-margin">$0.00</strong></div>
+                    <div class="order-preview-row"><span>Est. Liquidation</span><strong id="preview-liquidation">—</strong></div>
+                </div>
+
+                <button id="confirm-trade-btn" class="btn-primary">Open Long</button>
             </div>
 
             <!-- Strategy Bot -->

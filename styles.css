@@ -251,7 +251,7 @@ button { font-family: inherit; }
 .cash-display small { font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-secondary); letter-spacing: 0.05em; margin-bottom: 0.5rem; }
 
 .holdings-table-container { overflow: auto; flex: 1; min-height: 260px; }
-.holdings-table { width: 100%; min-width: 620px; border-collapse: separate; border-spacing: 0; font-size: 0.9rem; }
+.holdings-table { width: 100%; min-width: 780px; border-collapse: separate; border-spacing: 0; font-size: 0.9rem; }
 .holdings-table th {
     text-align: left; padding: 1rem 1.5rem; position: sticky; top: 0; background: var(--panel-bg);
     backdrop-filter: blur(10px);
@@ -261,6 +261,24 @@ button { font-family: inherit; }
 .holdings-table td { padding: 1rem 1.5rem; border-bottom: 1px solid rgba(28,25,23, 0.05); transition: background 0.2s; }
 .holdings-table tr:last-child td { border-bottom: none; }
 .holdings-table tr:hover td { background: rgba(161, 98, 7, 0.04); }
+.holdings-table tr.row-warning td { background: rgba(184, 134, 11, 0.08); }
+.holdings-table tr.row-warning:hover td { background: rgba(184, 134, 11, 0.13); }
+.empty-state { text-align: center; padding: 20px; color: var(--text-secondary); }
+
+.side-badge {
+    display: inline-block; padding: 3px 9px; border-radius: 6px;
+    font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.side-long { background: rgba(47, 107, 79, 0.14); color: var(--success-color); }
+.side-short { background: rgba(155, 59, 52, 0.14); color: var(--danger-color); }
+
+.btn-close-position, .btn-cancel-order {
+    padding: 5px 11px; border-radius: 6px; border: 1px solid rgba(28,25,23,0.15);
+    background: transparent; color: var(--text-secondary); font-family: var(--font-family);
+    font-size: 0.72rem; font-weight: 600; cursor: pointer; white-space: nowrap;
+    transition: all 0.2s ease;
+}
+.btn-close-position:hover, .btn-cancel-order:hover { background: var(--danger-color); border-color: var(--danger-color); color: white; }
 
 /* Right Panel */
 .right-panel { display: flex; flex-direction: column; gap: 1.5rem; background: transparent; border: none; box-shadow: none; overflow: visible; min-height: fit-content; }
@@ -275,11 +293,12 @@ button { font-family: inherit; }
 }
 .tab-btn:hover { color: var(--text-primary); }
 .tab-btn.active { background: var(--panel-bg); color: var(--text-primary); box-shadow: var(--shadow-sm); transform: scale(1.02); }
-.tab-btn[data-tab="sell"].active { color: var(--danger-color); }
-.tab-btn[data-tab="buy"].active { color: var(--success-color); }
+.tab-btn[data-side="short"].active { color: var(--danger-color); }
+.tab-btn[data-side="long"].active { color: var(--success-color); }
 
 .form-group { margin-bottom: 1.25rem; }
 .form-group label { display: block; font-size: 0.8rem; font-weight: 700; color: var(--text-secondary); margin-bottom: 0.6rem; letter-spacing: 0.03em; }
+.form-group label small { font-weight: 400; text-transform: none; letter-spacing: 0; opacity: 0.75; }
 .input-wrapper { position: relative; }
 
 input, select {
@@ -288,7 +307,19 @@ input, select {
     transition: all 0.2s;
 }
 input:hover, select:hover { border-color: rgba(28,25,23, 0.4); }
-input:focus, select:focus { outline: none; border-color: var(--accent-color); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15); background: rgba(255,255,255,0.1); }
+input:focus, select:focus { outline: none; border-color: var(--accent-color); box-shadow: 0 0 0 3px rgba(161, 98, 7, 0.15); background: rgba(255,255,255,0.1); }
+
+input[type="range"] {
+    padding: 0; border: none; background: transparent; height: 22px;
+    accent-color: var(--accent-color); cursor: pointer;
+}
+
+.order-preview {
+    background: rgba(28,25,23,0.035); border-radius: 10px; padding: 0.9rem 1.1rem;
+    margin: 0.5rem 0 1.25rem; display: flex; flex-direction: column; gap: 0.45rem;
+}
+.order-preview-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 0.82rem; color: var(--text-secondary); }
+.order-preview-row strong { color: var(--text-primary); font-variant-numeric: tabular-nums; font-weight: 700; }
 
 .price-display-large {
     font-family: var(--font-serif);
@@ -350,6 +381,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent-color); bo
 .tx-badge { padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
 .tx-buy { background: rgba(47, 107, 79, 0.14); color: var(--success-color); }
 .tx-sell { background: rgba(155, 59, 52, 0.14); color: var(--danger-color); }
+.tx-neutral { background: rgba(161, 98, 7, 0.14); color: var(--accent-color); }
 
 /* Color utilities & Animations */
 .text-green { color: var(--success-color); font-weight: 600; text-shadow: 0 0 20px rgba(47, 107, 79, 0.18); }

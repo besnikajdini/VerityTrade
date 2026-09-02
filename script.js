@@ -6,14 +6,17 @@ const CONFIG = {
         low: 0.008,
         medium: 0.025,
         high: 0.06
-    }
+    },
+    maintenanceMarginRatio: 0.005, // position is liquidated once equity <= 0.5% of margin
+    marginCallThreshold: 0.3 // warn once equity < 30% of margin
 };
 
 // Initial State
 const initialState = {
     cash: CONFIG.startBalance,
     day: 1,
-    portfolio: {},
+    positions: {}, // open leveraged positions, keyed by id
+    orders: {}, // pending limit/stop/stop-limit orders, keyed by id
     transactions: []
 };
 
@@ -42,8 +45,10 @@ let previousPrices = {};
 let simulationInterval = null;
 let currentVolatility = 'medium';
 let selectedAssetId = 'BTC';
-let tradeTab = 'buy';
+let tradeTab = 'long'; // 'long' | 'short'
 let botStrategy = 'none';
+let positionIdCounter = 1;
+let orderIdCounter = 1;
 
 // Chart state
 const chartState = { timeframe: '1h', type: 'candlestick', showSMA: false, showEMA: false, showVolume: true, smaPeriod: 20, emaPeriod: 20 };
@@ -63,6 +68,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     setupEventListeners();
     initPriceChart();
+    updateOrderFormVisibility();
     startSimulation();
     renderAll();
 });
@@ -72,7 +78,13 @@ function loadData() {
     const saved = localStorage.getItem('proTradeData_v2');
     if (saved) {
         store = JSON.parse(saved);
-        // We assume prices are volatile and reset them to start for simplicity 
+        if (!store.positions) store.positions = {};
+        if (!store.orders) store.orders = {};
+
+        positionIdCounter = 1 + Object.keys(store.positions).reduce((max, id) => Math.max(max, parseInt(id.split('_')[1]) || 0), 0);
+        orderIdCounter = 1 + Object.keys(store.orders).reduce((max, id) => Math.max(max, parseInt(id.split('_')[1]) || 0), 0);
+
+        // We assume prices are volatile and reset them to start for simplicity
         // OR we could save prices too. Let's restart prices to keep it simple but keep portfolio.
         ASSETS.forEach(a => {
             currentPrices[a.id] = a.startPrice;
@@ -92,22 +104,24 @@ function startSimulation() {
 
 function nextDay() {
     store.day++;
-    
+
     // Update Prices
     ASSETS.forEach(asset => {
         previousPrices[asset.id] = currentPrices[asset.id];
-        
+
         const vol = CONFIG.volatility[currentVolatility];
         // More realistic random walk with slight upward bias usually, but let's keep it random
-        const percentChange = (Math.random() * 2 - 1) * vol; 
-        
+        const percentChange = (Math.random() * 2 - 1) * vol;
+
         // Apply change
         let price = currentPrices[asset.id] * (1 + percentChange);
         if (price < 0.01) price = 0.01;
-        
+
         currentPrices[asset.id] = price;
     });
 
+    processPendingOrders();
+    processPositions();
     runBot();
 
     saveData();
@@ -115,130 +129,219 @@ function nextDay() {
 }
 
 function calculateEquity() {
-    let assetsCheck = 0;
-    for (const [id, data] of Object.entries(store.portfolio)) {
-        if (currentPrices[id]) {
-            assetsCheck += data.qty * currentPrices[id];
-        }
-    }
-    return store.cash + assetsCheck;
-}
-
-// --- Trading ---
-function executeTrade() {
-    const qtyInput = document.getElementById('trade-qty');
-    const qty = parseFloat(qtyInput.value);
-    
-    if (isNaN(qty) || qty <= 0) {
-        showToast('Invalid quantity', 'error');
-        return;
-    }
-
-    const price = currentPrices[selectedAssetId];
-    const cost = price * qty;
-    
-    if (tradeTab === 'buy') {
-        if (store.cash >= cost) {
-            store.cash -= cost;
-            if (!store.portfolio[selectedAssetId]) store.portfolio[selectedAssetId] = { qty: 0, avgPrice: 0 };
-            
-            // Recalculate Avg Price
-            const oldQty = store.portfolio[selectedAssetId].qty;
-            const oldAvg = store.portfolio[selectedAssetId].avgPrice;
-            const newQty = oldQty + qty;
-            const newAvg = ((oldQty * oldAvg) + cost) / newQty;
-            
-            store.portfolio[selectedAssetId].qty = newQty;
-            store.portfolio[selectedAssetId].avgPrice = newAvg;
-            
-            logTx('buy', selectedAssetId, price, qty);
-            showToast(`Bought ${qty} ${selectedAssetId}`, 'success');
-            qtyInput.value = '';
-            renderAll();
-        } else {
-            showToast('Insufficient Funds', 'error');
-        }
-    } else {
-        // Sell
-        const currentQty = store.portfolio[selectedAssetId]?.qty || 0;
-        if (currentQty >= qty) {
-            store.cash += cost;
-            store.portfolio[selectedAssetId].qty -= qty;
-            
-            if (store.portfolio[selectedAssetId].qty < 0.0001) {
-                delete store.portfolio[selectedAssetId];
-            }
-            
-            logTx('sell', selectedAssetId, price, qty);
-            showToast(`Sold ${qty} ${selectedAssetId}`, 'success');
-            qtyInput.value = '';
-            renderAll();
-        } else {
-            showToast('Insufficient Assets', 'error');
-        }
-    }
-}
-
-function logTx(type, symbol, price, qty) {
-    store.transactions.unshift({
-        id: Date.now(),
-        day: store.day,
-        type,
-        symbol,
-        price,
-        qty
+    let positionsValue = 0;
+    Object.values(store.positions).forEach(pos => {
+        positionsValue += calcPositionValue(pos, currentPrices[pos.assetId]);
     });
+    let reservedMargin = 0;
+    Object.values(store.orders).forEach(order => { reservedMargin += order.margin; });
+    return store.cash + positionsValue + reservedMargin;
+}
+
+// --- Margin & Leverage Helpers ---
+function calcRequiredMargin(qty, price, leverage) {
+    return (qty * price) / leverage;
+}
+
+function calcLiquidationPrice(side, entryPrice, qty, margin) {
+    const buffer = (margin * (1 - CONFIG.maintenanceMarginRatio)) / qty;
+    return side === 'long' ? entryPrice - buffer : entryPrice + buffer;
+}
+
+function calcPnL(position, markPrice) {
+    const diff = position.side === 'long' ? (markPrice - position.entryPrice) : (position.entryPrice - markPrice);
+    return diff * position.qty;
+}
+
+function calcPositionValue(position, markPrice) {
+    return position.margin + calcPnL(position, markPrice);
+}
+
+function calcMarginRatio(position, markPrice) {
+    return calcPositionValue(position, markPrice) / position.margin;
+}
+
+// --- Orders ---
+// Places a market order (fills immediately) or a pending limit/stop/stop-limit
+// order (margin is reserved from cash immediately, like a real broker).
+function placeOrder({ assetId, side, orderType, qty, leverage, triggerPrice, limitPrice, tp, sl }) {
+    if (!qty || qty <= 0 || isNaN(qty)) return { ok: false, reason: 'invalid-qty' };
+
+    const refPrice = orderType === 'market'
+        ? currentPrices[assetId]
+        : (orderType === 'stop-limit' ? limitPrice : (triggerPrice || limitPrice));
+    if (!refPrice || refPrice <= 0) return { ok: false, reason: 'invalid-price' };
+
+    const margin = calcRequiredMargin(qty, refPrice, leverage);
+    if (margin > store.cash + 1e-9) return { ok: false, reason: 'insufficient-funds' };
+
+    if (orderType === 'market') {
+        store.cash -= margin;
+        openPosition({ assetId, side, qty, price: currentPrices[assetId], leverage, margin, tp, sl });
+        return { ok: true };
+    }
+
+    store.cash -= margin; // reserve margin for the pending order
+    const id = `ord_${orderIdCounter++}`;
+    store.orders[id] = {
+        id, assetId, side, type: orderType, qty, leverage, margin,
+        triggerPrice: triggerPrice || null,
+        limitPrice: limitPrice || null,
+        stage: orderType === 'stop-limit' ? 'trigger' : 'active',
+        tp: tp || null, sl: sl || null,
+        createdAt: store.day
+    };
+    logTx('neutral', `order-${orderType}-${side}`, assetId, triggerPrice || limitPrice, qty);
+    return { ok: true };
+}
+
+function cancelOrder(id) {
+    const order = store.orders[id];
+    if (!order) return;
+    store.cash += order.margin; // release reserved margin
+    delete store.orders[id];
+    logTx('neutral', 'order-cancelled', order.assetId, order.triggerPrice || order.limitPrice, order.qty);
+    renderAll();
+}
+
+// Checks every pending order against the latest prices and fills the ones
+// that were touched. Stop-limit orders move through two stages: once the
+// stop price is touched they arm, then fill once the limit price is touched.
+function processPendingOrders() {
+    Object.values(store.orders).forEach(order => {
+        const price = currentPrices[order.assetId];
+        let shouldFill = false;
+        let fillPrice = price;
+
+        if (order.type === 'limit') {
+            shouldFill = order.side === 'long' ? price <= order.triggerPrice : price >= order.triggerPrice;
+            fillPrice = order.triggerPrice;
+        } else if (order.type === 'stop') {
+            shouldFill = order.side === 'long' ? price >= order.triggerPrice : price <= order.triggerPrice;
+            fillPrice = order.triggerPrice;
+        } else if (order.type === 'stop-limit') {
+            if (order.stage === 'trigger') {
+                const armed = order.side === 'long' ? price >= order.triggerPrice : price <= order.triggerPrice;
+                if (armed) order.stage = 'active';
+            }
+            if (order.stage === 'active') {
+                shouldFill = order.side === 'long' ? price <= order.limitPrice : price >= order.limitPrice;
+                fillPrice = order.limitPrice;
+            }
+        }
+
+        if (shouldFill) {
+            delete store.orders[order.id];
+            openPosition({
+                assetId: order.assetId, side: order.side, qty: order.qty,
+                price: fillPrice, leverage: order.leverage, margin: order.margin,
+                tp: order.tp, sl: order.sl
+            });
+        }
+    });
+}
+
+// --- Positions ---
+function openPosition({ assetId, side, qty, price, leverage, margin, tp, sl }) {
+    const id = `pos_${positionIdCounter++}`;
+    store.positions[id] = {
+        id, assetId, side, qty, entryPrice: price, leverage, margin,
+        liquidationPrice: calcLiquidationPrice(side, price, qty, margin),
+        tp: tp || null, sl: sl || null,
+        marginWarned: false,
+        openedAt: store.day
+    };
+    logTx(side === 'long' ? 'buy' : 'sell', `open-${side}`, assetId, price, qty);
+    return store.positions[id];
+}
+
+function closePosition(id, price, reason) {
+    const pos = store.positions[id];
+    if (!pos) return;
+
+    const pnl = calcPnL(pos, price);
+    store.cash += Math.max(0, pos.margin + pnl); // no negative-balance: loss is capped at the margin
+
+    delete store.positions[id];
+
+    const label = reason === 'liquidation' ? 'liquidation' : reason === 'tp' ? 'tp-hit' : reason === 'sl' ? 'sl-hit' : `close-${pos.side}`;
+    const variant = reason === 'liquidation' ? 'sell' : reason === 'tp' ? 'buy' : reason === 'sl' ? 'sell' : (pnl >= 0 ? 'buy' : 'sell');
+    logTx(variant, label, pos.assetId, price, pos.qty);
+
+    if (reason === 'liquidation') showToast(`Liquidated: ${pos.assetId} ${pos.side.toUpperCase()}`, 'error');
+    else if (reason === 'tp') showToast(`Take-Profit hit: ${pos.assetId} ${pos.side.toUpperCase()}`, 'success');
+    else if (reason === 'sl') showToast(`Stop-Loss hit: ${pos.assetId} ${pos.side.toUpperCase()}`, 'error');
+
+    return pnl;
+}
+
+// Runs every tick: liquidates positions whose equity has collapsed below
+// the maintenance margin, warns once on positions nearing that threshold,
+// and closes positions whose take-profit/stop-loss price was touched.
+function processPositions() {
+    Object.values(store.positions).forEach(pos => {
+        const price = currentPrices[pos.assetId];
+        const ratio = calcMarginRatio(pos, price);
+
+        if (ratio <= CONFIG.maintenanceMarginRatio) {
+            closePosition(pos.id, price, 'liquidation');
+            return;
+        }
+
+        if (ratio < CONFIG.marginCallThreshold) {
+            if (!pos.marginWarned) {
+                showToast(`Margin call warning: ${pos.assetId} ${pos.side.toUpperCase()} nearing liquidation`, 'error');
+                pos.marginWarned = true;
+            }
+        } else {
+            pos.marginWarned = false;
+        }
+
+        if (pos.tp) {
+            const hit = pos.side === 'long' ? price >= pos.tp : price <= pos.tp;
+            if (hit) { closePosition(pos.id, pos.tp, 'tp'); return; }
+        }
+        if (pos.sl) {
+            const hit = pos.side === 'long' ? price <= pos.sl : price >= pos.sl;
+            if (hit) { closePosition(pos.id, pos.sl, 'sl'); return; }
+        }
+    });
+}
+
+function logTx(variant, label, symbol, price, qty) {
+    store.transactions.unshift({ id: Date.now() + Math.random(), day: store.day, variant, label, symbol, price, qty });
     if (store.transactions.length > 50) store.transactions.pop();
 }
 
 function runBot() {
     if (botStrategy === 'none') return;
+    const leverage = 1; // conservative — keeps the bot from liquidating itself
 
     ASSETS.forEach(asset => {
         const id = asset.id;
         const price = currentPrices[id];
         const prev = previousPrices[id];
         if (!prev) return;
-        
+
         const change = (price - prev) / prev;
-        
-        // Simple logic hooks
+
         if (botStrategy === 'buy-dip' && change < -0.02) {
-            // Buy small amount
             const invest = 500;
-            if (store.cash > invest) {
-                // Background trade, direct manipulation for speed
+            if (store.cash >= invest) {
                 store.cash -= invest;
-                if (!store.portfolio[id]) store.portfolio[id] = {qty:0, avgPrice:0};
-                let q = store.portfolio[id].qty;
-                let a = store.portfolio[id].avgPrice;
-                let boughtQty = invest / price;
-                store.portfolio[id].avgPrice = ((q*a)+invest) / (q+boughtQty);
-                store.portfolio[id].qty += boughtQty;
-                logTx('bot-buy', id, price, boughtQty);
-                // No toast for bot to avoid spam
+                openPosition({ assetId: id, side: 'long', qty: invest / price, price, leverage, margin: invest });
             }
-        }
-        else if (botStrategy === 'momentum') {
+        } else if (botStrategy === 'momentum') {
             if (change > 0.025) { // Buy breakout
-                 const invest = 300;
-                 if (store.cash > invest) {
-                     store.cash -= invest;
-                     if (!store.portfolio[id]) store.portfolio[id] = {qty:0, avgPrice:0};
-                     let q = store.portfolio[id].qty;
-                     let a = store.portfolio[id].avgPrice;
-                     let boughtQty = invest / price;
-                     store.portfolio[id].avgPrice = ((q*a)+invest) / (q+boughtQty);
-                     store.portfolio[id].qty += boughtQty;
-                     logTx('bot-buy', id, price, boughtQty);
-                 }
-            } else if (change < -0.02 && store.portfolio[id]) { // Stop loss
-                const qty = store.portfolio[id].qty;
-                if (qty > 0) {
-                     store.cash += qty * price;
-                     logTx('bot-sell', id, price, qty);
-                     delete store.portfolio[id];
+                const invest = 300;
+                if (store.cash >= invest) {
+                    store.cash -= invest;
+                    openPosition({ assetId: id, side: 'long', qty: invest / price, price, leverage, margin: invest });
                 }
+            } else if (change < -0.02) { // Stop loss: exit bot longs on this asset
+                Object.values(store.positions)
+                    .filter(p => p.assetId === id && p.side === 'long')
+                    .forEach(p => closePosition(p.id, price, 'manual'));
             }
         }
     });
@@ -248,7 +351,8 @@ function runBot() {
 function renderAll(animate = false) {
     renderHeader();
     renderMarket(animate);
-    renderPortfolio();
+    renderPositions();
+    renderOpenOrders();
     renderTradeBox();
     renderHistory();
     if (animate) updateChartLive();
@@ -258,15 +362,15 @@ function renderHeader() {
     const eq = calculateEquity();
     const pl = eq - CONFIG.startBalance;
     const plP = (pl / CONFIG.startBalance) * 100;
-    
+
     document.getElementById('day-counter').textContent = store.day;
     document.getElementById('total-equity').textContent = formatCurrency(eq);
-    
+
     const plEl = document.getElementById('total-pl');
     plEl.innerHTML = `<span class="${pl >= 0 ? 'text-green' : 'text-red'}">
         ${pl >= 0 ? '+' : ''}${plP.toFixed(2)}%
     </span>`;
-    
+
     document.getElementById('available-cash').textContent = formatCurrency(store.cash);
 }
 
@@ -274,21 +378,21 @@ function renderMarket(animate) {
     const list = document.getElementById('market-list');
     // Save scroll position
     const scroll = list.scrollTop;
-    
+
     list.innerHTML = '';
-    
+
     ASSETS.forEach(asset => {
         const id = asset.id;
         const price = currentPrices[id];
         const prev = previousPrices[id];
         const change = (price - prev) / prev * 100;
-        
+
         const el = document.createElement('div');
         el.className = `market-item ${selectedAssetId === id ? 'active' : ''}`;
         el.onclick = () => selectAsset(id);
-        
+
         const flashClass = animate ? (change > 0 ? 'flash-up' : (change < 0 ? 'flash-down' : '')) : '';
-        
+
         el.innerHTML = `
             <div class="asset-info">
                 <span class="asset-symbol">${id}</span>
@@ -303,49 +407,90 @@ function renderMarket(animate) {
         `;
         list.appendChild(el);
     });
-    
+
     list.scrollTop = scroll;
 }
 
-function renderPortfolio() {
-    const tbody = document.getElementById('holdings-list');
-    tbody.innerHTML = '';
-    
-    const holdings = Object.entries(store.portfolio);
-    if (holdings.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding: 20px; color: #888;">No Assets Owned</td></tr>';
+function renderPositions() {
+    const tbody = document.getElementById('positions-list');
+    const positions = Object.values(store.positions);
+
+    if (positions.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No Open Positions</td></tr>';
         return;
     }
 
-    holdings.forEach(([id, data]) => {
-        const price = currentPrices[id] || 0;
-        const value = data.qty * price;
-        const ret = value - (data.qty * data.avgPrice);
-        const retP = (data.qty * data.avgPrice) > 0 ? (ret / (data.qty * data.avgPrice) * 100) : 0;
-        
-        const row = document.createElement('tr');
-        row.innerHTML = `
-            <td>
-                <div style="font-weight:700">${id}</div>
-                <div style="font-size:0.75em; color:var(--text-secondary)">$${price.toFixed(2)}</div>
-            </td>
-            <td>${data.qty.toFixed(4)}</td>
-            <td>$${data.avgPrice.toFixed(2)}</td>
-            <td>${formatCurrency(value)}</td>
-            <td style="text-align:right" class="${ret >= 0 ? 'text-green' : 'text-red'}">
-                ${ret >= 0 ? '+' : ''}${Math.abs(ret).toFixed(2)} <br>
-                <small>(${retP.toFixed(2)}%)</small>
-            </td>
+    tbody.innerHTML = positions.map(pos => {
+        const price = currentPrices[pos.assetId] || 0;
+        const pnl = calcPnL(pos, price);
+        const pnlP = (pnl / pos.margin) * 100;
+        const ratio = calcMarginRatio(pos, price);
+        const warning = ratio < CONFIG.marginCallThreshold;
+
+        return `
+            <tr class="${warning ? 'row-warning' : ''}">
+                <td>
+                    <div style="font-weight:700">${pos.assetId}</div>
+                    <div style="font-size:0.75em; color:var(--text-secondary)">$${price.toFixed(2)}</div>
+                </td>
+                <td><span class="side-badge side-${pos.side}">${pos.side}</span> <span style="color:var(--text-secondary); font-size:0.8em;">${pos.leverage}x</span></td>
+                <td>${pos.qty.toFixed(4)}</td>
+                <td>$${pos.entryPrice.toFixed(2)}</td>
+                <td>$${pos.margin.toFixed(2)}</td>
+                <td class="${pnl >= 0 ? 'text-green' : 'text-red'}">
+                    ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}<br><small>(${pnlP.toFixed(1)}%)</small>
+                </td>
+                <td>$${pos.liquidationPrice.toFixed(2)}${warning ? ' <i class="fas fa-triangle-exclamation" title="Margin call warning" style="color:var(--danger-color)"></i>' : ''}</td>
+                <td style="font-size:0.85em;">${pos.tp ? '$' + pos.tp.toFixed(2) : '—'} / ${pos.sl ? '$' + pos.sl.toFixed(2) : '—'}</td>
+                <td><button class="btn-close-position" data-id="${pos.id}">Close</button></td>
+            </tr>
         `;
-        row.onclick = () => { selectAsset(id); };
-        row.style.cursor = 'pointer';
-        tbody.appendChild(row);
+    }).join('');
+
+    tbody.querySelectorAll('.btn-close-position').forEach(btn => {
+        btn.onclick = () => {
+            const pos = store.positions[btn.dataset.id];
+            if (!pos) return;
+            closePosition(pos.id, currentPrices[pos.assetId], 'manual');
+            renderAll();
+        };
+    });
+}
+
+function renderOpenOrders() {
+    const tbody = document.getElementById('orders-list');
+    const orders = Object.values(store.orders);
+
+    if (orders.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No Open Orders</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = orders.map(o => {
+        const priceLabel = o.type === 'stop-limit'
+            ? `Stop $${o.triggerPrice.toFixed(2)} / Limit $${o.limitPrice.toFixed(2)}`
+            : `$${(o.triggerPrice || o.limitPrice).toFixed(2)}`;
+        return `
+            <tr>
+                <td style="font-weight:700">${o.assetId}</td>
+                <td style="text-transform:capitalize">${o.type}</td>
+                <td><span class="side-badge side-${o.side}">${o.side}</span> <span style="color:var(--text-secondary); font-size:0.8em;">${o.leverage}x</span></td>
+                <td>${o.qty.toFixed(4)}</td>
+                <td style="font-size:0.85em;">${priceLabel}</td>
+                <td>$${o.margin.toFixed(2)}</td>
+                <td><button class="btn-cancel-order" data-id="${o.id}">Cancel</button></td>
+            </tr>
+        `;
+    }).join('');
+
+    tbody.querySelectorAll('.btn-cancel-order').forEach(btn => {
+        btn.onclick = () => cancelOrder(btn.dataset.id);
     });
 }
 
 function renderTradeBox() {
     const price = currentPrices[selectedAssetId];
-    
+
     // Select
     const select = document.getElementById('trade-asset-select');
     if (select.children.length === 0) {
@@ -353,23 +498,105 @@ function renderTradeBox() {
         select.onchange = (e) => selectAsset(e.target.value);
     }
     select.value = selectedAssetId;
-    
+
     // Price
     document.getElementById('trade-price-display').textContent = formatCurrency(price);
 
-    // Keep action button style in sync with selected tab.
-    const confirmBtn = document.getElementById('confirm-trade-btn');
-    confirmBtn.textContent = tradeTab === 'buy' ? 'Execute Buy' : 'Execute Sell';
-    confirmBtn.className = tradeTab === 'buy' ? 'btn-primary' : 'btn-primary btn-danger';
-    
-    // Total calculation
-    updateTotal();
+    updateConfirmButtonLabel();
+    updateOrderPreview();
 }
 
-function updateTotal() {
+// Recomputes position size, required margin and estimated liquidation price
+// live as the user edits qty/leverage/order-type/trigger fields.
+function updateOrderPreview() {
+    const type = document.getElementById('order-type-select').value;
     const qty = parseFloat(document.getElementById('trade-qty').value) || 0;
-    const total = qty * currentPrices[selectedAssetId];
-    document.getElementById('trade-total').textContent = formatCurrency(total);
+    const leverage = parseInt(document.getElementById('leverage-slider').value, 10);
+    document.getElementById('leverage-value').textContent = leverage + 'x';
+
+    let refPrice = currentPrices[selectedAssetId];
+    if (type === 'limit' || type === 'stop') {
+        refPrice = parseFloat(document.getElementById('trigger-price').value) || refPrice;
+    } else if (type === 'stop-limit') {
+        refPrice = parseFloat(document.getElementById('limit-price').value) || refPrice;
+    }
+
+    const margin = qty > 0 ? calcRequiredMargin(qty, refPrice, leverage) : 0;
+    const liquidation = qty > 0 ? calcLiquidationPrice(tradeTab, refPrice, qty, margin) : null;
+
+    document.getElementById('trade-total').textContent = formatCurrency(qty * refPrice);
+    document.getElementById('preview-margin').textContent = formatCurrency(margin);
+    document.getElementById('preview-liquidation').textContent = liquidation ? formatCurrency(liquidation) : '—';
+}
+
+function updateConfirmButtonLabel() {
+    const type = document.getElementById('order-type-select').value;
+    const btn = document.getElementById('confirm-trade-btn');
+    const sideLabel = tradeTab === 'long' ? 'Long' : 'Short';
+    btn.textContent = type === 'market' ? `Open ${sideLabel}` : `Place ${sideLabel} Order`;
+    btn.className = tradeTab === 'long' ? 'btn-primary' : 'btn-primary btn-danger';
+}
+
+// Shows/hides the trigger & limit price fields based on the selected order type.
+function updateOrderFormVisibility() {
+    const type = document.getElementById('order-type-select').value;
+    const triggerGroup = document.getElementById('trigger-price-group');
+    const limitGroup = document.getElementById('limit-price-group');
+    const triggerLabel = document.getElementById('trigger-price-label');
+
+    triggerGroup.hidden = type === 'market';
+    limitGroup.hidden = type !== 'stop-limit';
+    triggerLabel.textContent = type === 'limit' ? 'Limit Price' : 'Stop Price';
+}
+
+function handlePlaceOrder() {
+    const assetId = selectedAssetId;
+    const side = tradeTab;
+    const orderType = document.getElementById('order-type-select').value;
+    const qty = parseFloat(document.getElementById('trade-qty').value);
+    const leverage = parseInt(document.getElementById('leverage-slider').value, 10);
+    const triggerPrice = parseFloat(document.getElementById('trigger-price').value) || null;
+    const limitPrice = parseFloat(document.getElementById('limit-price').value) || null;
+    const tp = parseFloat(document.getElementById('tp-price').value) || null;
+    const sl = parseFloat(document.getElementById('sl-price').value) || null;
+
+    if (!qty || qty <= 0) { showToast('Invalid quantity', 'error'); return; }
+    if ((orderType === 'limit' || orderType === 'stop') && !triggerPrice) {
+        showToast(`Set a ${orderType === 'limit' ? 'limit' : 'stop'} price`, 'error');
+        return;
+    }
+    if (orderType === 'stop-limit' && (!triggerPrice || !limitPrice)) {
+        showToast('Set both stop and limit price', 'error');
+        return;
+    }
+
+    const refPrice = triggerPrice || limitPrice || currentPrices[assetId];
+    if (tp) {
+        const valid = side === 'long' ? tp > refPrice : tp < refPrice;
+        if (!valid) { showToast(`Take-Profit must be ${side === 'long' ? 'above' : 'below'} the entry price`, 'error'); return; }
+    }
+    if (sl) {
+        const valid = side === 'long' ? sl < refPrice : sl > refPrice;
+        if (!valid) { showToast(`Stop-Loss must be ${side === 'long' ? 'below' : 'above'} the entry price`, 'error'); return; }
+    }
+
+    const result = placeOrder({ assetId, side, orderType, qty, leverage, triggerPrice, limitPrice, tp, sl });
+
+    if (!result.ok) {
+        const messages = {
+            'insufficient-funds': 'Insufficient funds for required margin',
+            'invalid-qty': 'Invalid quantity',
+            'invalid-price': 'Invalid price'
+        };
+        showToast(messages[result.reason] || 'Order rejected', 'error');
+        return;
+    }
+
+    showToast(orderType === 'market' ? `${side === 'long' ? 'Long' : 'Short'} position opened` : 'Order placed', 'success');
+    document.getElementById('trade-qty').value = '';
+    document.getElementById('tp-price').value = '';
+    document.getElementById('sl-price').value = '';
+    renderAll();
 }
 
 function renderHistory() {
@@ -377,7 +604,7 @@ function renderHistory() {
     list.innerHTML = store.transactions.map(tx => `
         <div class="transaction-item">
             <div>
-                <span class="tx-badge ${tx.type.includes('buy') ? 'tx-buy' : 'tx-sell'}">${tx.type}</span>
+                <span class="tx-badge tx-${tx.variant}">${tx.label.replace(/-/g, ' ')}</span>
                 <span style="font-weight:600; margin-left: 5px;">${tx.symbol}</span>
             </div>
             <div style="text-align:right">
@@ -637,9 +864,9 @@ function showToast(msg, type = 'success') {
     const icon = type === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle';
     t.innerHTML = `<i class="fas ${icon}"></i> <span>${msg}</span>`;
     c.appendChild(t);
-    
+
     // Sound (Simple tone) (Browser requires interaction first, often blocked, skipping for simple implementation)
-    
+
     setTimeout(() => {
         t.style.animation = 'fadeOut 0.3s forwards';
         setTimeout(() => c.removeChild(t), 300);
@@ -663,26 +890,57 @@ function setupEventListeners() {
             location.reload();
         }
     };
-    
+
     document.getElementById('risk-level').onchange = (e) => {
         currentVolatility = e.target.value;
     };
-    
-    // Tabs
-    document.querySelectorAll('.tab-btn').forEach(btn => {
+
+    // Long / Short side tabs
+    document.querySelectorAll('#side-tabs .tab-btn').forEach(btn => {
         btn.onclick = () => {
-             tradeTab = btn.dataset.tab;
-             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-             btn.classList.add('active');
-             
-             const cBtn = document.getElementById('confirm-trade-btn');
-             cBtn.textContent = tradeTab === 'buy' ? 'Execute Buy' : 'Execute Sell';
-             cBtn.className = tradeTab === 'buy' ? 'btn-primary' : 'btn-primary btn-danger';
+            tradeTab = btn.dataset.side;
+            document.querySelectorAll('#side-tabs .tab-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            updateConfirmButtonLabel();
+            updateOrderPreview();
         };
     });
-    
-    document.getElementById('trade-qty').oninput = updateTotal;
-    document.getElementById('confirm-trade-btn').onclick = executeTrade;
+
+    // Positions / Open Orders tabs
+    document.querySelectorAll('#positions-orders-tabs .tab-btn').forEach(btn => {
+        btn.onclick = () => {
+            document.querySelectorAll('#positions-orders-tabs .tab-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const view = btn.dataset.view;
+            document.getElementById('positions-view').hidden = view !== 'positions';
+            document.getElementById('orders-view').hidden = view !== 'orders';
+        };
+    });
+
+    document.getElementById('order-type-select').onchange = () => {
+        updateOrderFormVisibility();
+        updateConfirmButtonLabel();
+        updateOrderPreview();
+    };
+
+    ['trade-qty', 'trigger-price', 'limit-price'].forEach(elId => {
+        document.getElementById(elId).oninput = updateOrderPreview;
+    });
+    document.getElementById('leverage-slider').oninput = updateOrderPreview;
+
+    document.getElementById('confirm-trade-btn').onclick = handlePlaceOrder;
+
+    document.getElementById('strategy-select').onchange = (e) => {
+        botStrategy = e.target.value;
+        const s = document.getElementById('bot-status');
+        if (botStrategy === 'none') {
+            s.innerHTML = '● Bot Inactive';
+            s.style.color = 'var(--text-secondary)';
+        } else {
+            s.innerHTML = '● Bot Active & Trading';
+            s.style.color = 'var(--success-color)';
+        }
+    };
 
     // Chart toolbar
     document.querySelectorAll('#timeframe-group .chart-btn').forEach(btn => {
@@ -706,17 +964,5 @@ function setupEventListeners() {
     document.getElementById('toggle-volume').onchange = (e) => {
         chartState.showVolume = e.target.checked;
         chartApi.volumeSeries.applyOptions({ visible: e.target.checked });
-    };
-
-    document.getElementById('strategy-select').onchange = (e) => {
-        botStrategy = e.target.value;
-        const s = document.getElementById('bot-status');
-        if (botStrategy === 'none') {
-            s.innerHTML = '● Bot Inactive';
-            s.style.color = 'var(--text-secondary)';
-        } else {
-            s.innerHTML = '● Bot Active & Trading';
-            s.style.color = 'var(--success-color)';
-        }
     };
 }

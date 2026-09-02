@@ -413,8 +413,8 @@ function renderChart() {
     const max = Math.max(...data) * 1.01;
     const range = max - min;
     
-    // Color (light theme only)
-    const color = '#3b82f6';
+    // Color (light theme only) — antique gold, matches --accent-color
+    const color = '#a16207';
     
     // Path
     ctx.beginPath();
@@ -437,7 +437,7 @@ function renderChart() {
     ctx.lineTo(0, h);
     ctx.closePath();
     const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, 'rgba(59, 130, 246, 0.2)');
+    grad.addColorStop(0, 'rgba(161, 98, 7, 0.18)');
     grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
     ctx.fillStyle = grad;
     ctx.fill();
